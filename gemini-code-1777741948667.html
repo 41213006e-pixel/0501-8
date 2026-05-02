@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PICO Health: Professional Edition</title>
+    <style>
+        :root {
+            --pico-bg: #f5f5f5;
+            --pico-dark: #333;
+            --pico-hero: #4ea5ff;
+            --pico-door: #ff7bac;
+            --pico-spike: #e74c3c;
+            --pico-hp: #ff4757;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background-color: var(--pico-bg);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #ui-top {
+            display: flex;
+            justify-content: space-between;
+            width: 800px;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        #question-box {
+            background: var(--pico-dark);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 18px;
+            width: 800px;
+            text-align: center;
+            box-shadow: 0 4px 0px #000;
+            margin-bottom: 10px;
+        }
+
+        canvas {
+            background-color: white;
+            border: 6px solid var(--pico-dark);
+        }
+
+        .hp-bar { color: var(--pico-hp); }
+    </style>
+</head>
+<body>
+
+<div id="ui-top">
+    <div id="status-hp" class="hp-bar">HP: ❤️❤️❤️</div>
+    <div id="status-score">SCORE: 0</div>
+</div>
+
+<div id="question-box">按任意鍵開始健康冒險</div>
+
+<canvas id="game-canvas" width="800" height="520"></canvas>
+
+<script>
+    const canvas = document.getElementById('game-canvas');
+    const ctx = canvas.getContext('2d');
+
+    // 擴充題目庫
+    const quizBank = [
+        { q: "成人每日建議飲水量是體重(kg)乘以多少？", options: ["10ml", "20ml", "30-35ml", "100ml"], correct: 2 },
+        { q: "下列哪種運動最能增進心肺功能？", options: ["看電視", "慢跑", "睡午覺", "玩下棋"], correct: 1 },
+        { q: "洗手「內外夾弓大立腕」，最後動作是？", options: ["洗指甲", "洗手指", "洗手心", "洗手腕"], correct: 3 },
+        { q: "預防近視，用眼30分鐘應休息多久？", options: ["1分鐘", "10分鐘", "30分鐘", "不休息"], correct: 1 },
+        { q: "正確刷牙法「貝氏刷牙法」，刷毛與牙齒夾角？", options: ["15度", "45度", "90度", "180度"], correct: 1 },
+        { q: "下列何者為攝取維生素C的優良來源？", options: ["漢堡", "芭樂", "泡麵", "可樂"], correct: 1 }
+    ];
+
+    let currentLevel = 0;
+    let score = 0;
+    let hp = 3;
+    let doorOpen = false;
+    let gameStarted = false;
+    let platforms = [];
+    let coins = [];
+    let spikes = [];
+    
+    const player = {
+        x: 50, y: 0, vx: 0, vy: 0, size: 30,
+        onGround: false, speed: 4.5, jumpPower: -11
+    };
+
+    const keys = {};
+
+    function generateMap() {
+        // 固定間距設計：150px 確保跳躍不會撞到上層
+        platforms = [
+            { x: 0, y: 120, w: 300, h: 15 },   // Top
+            { x: 100, y: 270, w: 600, h: 15 }, // Mid (120+150)
+            { x: 0, y: 420, w: 800, h: 15 }    // Bot (270+150)
+        ];
+        coins = [];
+        spikes = [];
+        
+        // 隨機生成尖刺 (避開第一層)
+        for (let i = 0; i < 3; i++) {
+            const p = platforms[Math.floor(Math.random() * 2) + 1];
+            spikes.push({
+                x: p.x + 100 + Math.random() * (p.w - 200),
+                y: p.y - 15,
+                w: 22, h: 15
+            });
+        }
+
+        // 隨機分布金幣 (網格化防重疊)
+        const data = quizBank[currentLevel];
+        data.options.forEach((opt, i) => {
+            let valid = false;
+            let cx, cy;
+            while(!valid) {
+                const p = platforms[Math.floor(Math.random() * 3)];
+                cx = p.x + 30 + Math.random() * (p.w - 60);
+                cy = p.y - 40;
+                // 檢查與尖刺、金幣、玩家起點、門的距離
+                const nearSpike = spikes.some(s => Math.abs(s.x - cx) < 60);
+                const nearCoin = coins.some(c => Math.abs(c.x - cx) < 130 && Math.abs(c.y - cy) < 50);
+                const nearStart = (cy < 150 && cx < 150);
+                const nearDoor = (cy > 350 && cx > 700);
+                if (!nearSpike && !nearCoin && !nearStart && !nearDoor) valid = true;
+            }
+            coins.push({ x: cx, y: cy, text: opt, isCorrect: i === data.correct, collected: false });
+        });
+
+        player.x = 50; player.y = 80;
+        player.vx = 0; player.vy = 0;
+    }
+
+    function initLevel() {
+        doorOpen = false;
+        generateMap();
+        updateUI();
+    }
+
+    function updateUI() {
+        const box = document.getElementById('question-box');
+        box.innerText = quizBank[currentLevel].q;
+        box.style.backgroundColor = "#333";
+        document.getElementById('status-hp').innerText = "HP: " + "❤️".repeat(hp);
+        document.getElementById('status-score').innerText = "SCORE: " + score;
+    }
+
+    function loseHp() {
+        hp--;
+        if (hp <= 0) {
+            alert("遊戲結束！最終得分: " + score);
+            location.reload();
+        } else {
+            updateUI();
+            player.x = 50; player.y = 80;
+        }
+    }
+
+    window.addEventListener('keydown', e => {
+        keys[e.code] = true;
+        if (!gameStarted) { gameStarted = true; initLevel(); requestAnimationFrame(gameLoop); }
+    });
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    function update() {
+        if (keys['ArrowLeft']) player.vx = -player.speed;
+        else if (keys['ArrowRight']) player.vx = player.speed;
+        else player.vx *= 0.8;
+
+        if (keys['ArrowUp'] && player.onGround) {
+            player.vy = player.jumpPower;
+            player.onGround = false;
+        }
+
+        player.vy += 0.55;
+        player.x += player.vx;
+        player.y += player.vy;
+        player.onGround = false;
+
+        platforms.forEach(p => {
+            if (player.x + player.size > p.x && player.x < p.x + p.w &&
+                player.y + player.size > p.y && player.y + player.size < p.y + p.h + 10 && player.vy >= 0) {
+                player.y = p.y - player.size;
+                player.vy = 0;
+                player.onGround = true;
+            }
+        });
+
+        spikes.forEach(s => {
+            if (player.x + player.size > s.x && player.x < s.x + s.w &&
+                player.y + player.size > s.y && player.y < s.y + s.h) {
+                loseHp();
+            }
+        });
+
+        coins.forEach(c => {
+            if (!c.collected && Math.abs(player.x - c.x) < 30 && Math.abs(player.y - c.y) < 40) {
+                c.collected = true;
+                if (c.isCorrect) {
+                    doorOpen = true;
+                    score += 100;
+                    const box = document.getElementById('question-box');
+                    box.innerText = "正確！得分 +100，前往傳送門！";
+                    box.style.backgroundColor = "#2ecc71";
+                    document.getElementById('status-score').innerText = "SCORE: " + score;
+                } else {
+                    score = Math.max(0, score - 20);
+                    loseHp();
+                }
+            }
+        });
+
+        if (player.y > 520) loseHp();
+        if (player.x < 0) player.x = 0;
+        if (player.x > 800 - player.size) player.x = 800 - player.size;
+
+        if (doorOpen && Math.abs(player.x - 720) < 40 && player.y > 350) {
+            currentLevel++;
+            if (currentLevel < quizBank.length) initLevel();
+            else {
+                alert("恭喜全關卡破關！總分: " + score);
+                location.reload();
+            }
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#333";
+        platforms.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
+        
+        ctx.fillStyle = "#e74c3c";
+        spikes.forEach(s => {
+            ctx.beginPath();
+            ctx.moveTo(s.x, s.y + s.h);
+            ctx.lineTo(s.x + s.w / 2, s.y);
+            ctx.lineTo(s.x + s.w, s.y + s.h);
+            ctx.fill();
+        });
+
+        coins.forEach(c => {
+            if (!c.collected) {
+                ctx.fillStyle = "#f1c40f";
+                ctx.beginPath(); ctx.arc(c.x+15, c.y+15, 12, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = "#333"; ctx.font = "bold 13px Arial"; ctx.textAlign = "center";
+                ctx.fillText(c.text, c.x + 15, c.y - 12);
+            }
+        });
+
+        ctx.fillStyle = doorOpen ? "#ff7bac" : "#ccc";
+        ctx.fillRect(720, 350, 40, 70);
+        ctx.strokeRect(720, 350, 40, 70);
+
+        ctx.fillStyle = "#4ea5ff";
+        ctx.fillRect(player.x, player.y, player.size, player.size);
+        ctx.strokeRect(player.x, player.y, player.size, player.size);
+        ctx.fillStyle = "black";
+        ctx.fillRect(player.x + 6, player.y + 8, 4, 4);
+        ctx.fillRect(player.x + 20, player.y + 8, 4, 4);
+    }
+
+    function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+</script>
+
+</body>
+</html>
